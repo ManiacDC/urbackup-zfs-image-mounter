@@ -35,7 +35,11 @@ def clear_restore_state() -> None:
 
 
 def run_command(command: List[str], check: bool = True) -> str:
-    result = subprocess.run(command, capture_output=True, text=True)
+    try:
+        result = subprocess.run(command, capture_output=True, text=True, check=False)
+    except FileNotFoundError as exc:
+        raise RuntimeError(f"Required command not found: {command[0]}") from exc
+
     if check and result.returncode != 0:
         raise RuntimeError(f"Command {' '.join(command)} failed: {result.stderr.strip() or result.stdout.strip()}")
     return result.stdout.strip()
@@ -251,7 +255,10 @@ def index():
 @app.route("/api/snapshots", methods=["GET"])
 def api_snapshots():
     backup_path = request.args.get("backup_path", os.getenv("BACKUPS_PATH", ""))
-    snapshots = list_snapshots_for_path(backup_path)
+    try:
+        snapshots = list_snapshots_for_path(backup_path)
+    except RuntimeError as exc:
+        return jsonify({"error": str(exc)}), 500
     return jsonify({"snapshots": snapshots, "backup_path": backup_path})
 
 

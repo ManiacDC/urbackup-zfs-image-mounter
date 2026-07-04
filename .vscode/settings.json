@@ -13,6 +13,10 @@
         "/^python -m unittest discover -s tests -p \"test_\\*\\.py\"$/": {
             "approve": true,
             "matchCommandLine": true
+        },
+        "/^i:/LocalFiles/Programming/urbackup-zfs-image-mounter/\\.venv313/Scripts/python\\.exe -m unittest discover -s tests -p \"test_\\*\\.py\"$/": {
+            "approve": true,
+            "matchCommandLine": true
         }
     }
 }
