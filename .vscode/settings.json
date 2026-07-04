@@ -1,0 +1,14 @@
+{
+    "python-envs.defaultEnvManager": "ms-python.python:venv",
+    "python-envs.defaultPackageManager": "ms-python.python:pip",
+    "chat.tools.terminal.autoApprove": {
+        "/^python -m unittest discover -s tests -v$/": {
+            "approve": true,
+            "matchCommandLine": true
+        },
+        "/^\\.\\\\\\.venv313\\\\Scripts\\\\python\\.exe -m unittest discover -s tests -v$/": {
+            "approve": true,
+            "matchCommandLine": true
+        }
+    }
+}

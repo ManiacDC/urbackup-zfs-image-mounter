@@ -1,0 +1,24 @@
+services:
+  urbackup-zfs-image-mounter:
+    image: maniacdc/urbackup-zfs-image-mounter:latest
+    container_name: urbackup-zfs-image-mounter
+    privileged: true
+    restart: unless-stopped
+    ports:
+      - "31842:8000"
+    environment:
+      PORT: 8000
+      RESTORE_STATE_FILE: /data/restore-state.json
+      BACKUPS_PATH: /mnt/tank/urbackup
+      RESTORE_PATH: /mnt/tank/restore
+      TRUENAS_API_KEY: your-api-key
+      TRUENAS_VERIFY_SSL: "false"
+      TRUENAS_TARGET_NAME: urbackup-restore-target
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes:
+      - /mnt/tank/applicationdata/urbackup-zfs-image-mounter/data:/data
+      - /mnt/tank/urbackup:/mnt/tank/urbackup:ro
+      - /mnt/tank/restore:/mnt/tank/restore
+    devices:
+      - /dev/zfs:/dev/zfs

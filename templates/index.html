@@ -1,0 +1,103 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>UrBackup ZFS iSCSI Restore</title>
+    <style>
+      body { font-family: Arial, sans-serif; margin: 2rem auto; max-width: 920px; line-height: 1.5; }
+      form, .card { border: 1px solid #ddd; border-radius: 8px; padding: 1rem; margin-bottom: 1rem; }
+      button { padding: 0.5rem 1rem; cursor: pointer; }
+      #status { white-space: pre-wrap; background: #f6f8fa; padding: 1rem; border-radius: 8px; }
+      select, input { width: 100%; padding: 0.5rem; margin-top: 0.25rem; margin-bottom: 0.75rem; }
+      .row { display: flex; gap: 1rem; }
+      .row > div { flex: 1; }
+    </style>
+  </head>
+  <body>
+    <h1>UrBackup ZFS Snapshot Restore</h1>
+    <p>This app lists ZFS snapshots for a backup path, clones the selected snapshot into a restore location, finds the .raw image, and provisions a TrueNAS iSCSI extent.</p>
+
+    <div class="card">
+      <div class="row">
+        <div>
+          <label for="backup_path">Backups path</label>
+          <input id="backup_path" value="{{ backup_path }}" placeholder="/mnt/tank/urbackup" />
+        </div>
+        <div>
+          <label for="restore_path">Restore path</label>
+          <input id="restore_path" value="{{ restore_path }}" placeholder="/mnt/tank/restore" />
+        </div>
+      </div>
+      <button id="refreshButton" type="button">Refresh snapshots</button>
+    </div>
+
+    <div class="card">
+      <label for="snapshotSelect">Snapshot</label>
+      <select id="snapshotSelect"></select>
+      <button id="restoreButton" type="button">Restore snapshot</button>
+      <button id="cleanupButton" type="button">Clean up last restore</button>
+    </div>
+
+    <div id="status">Loading…</div>
+
+    <script>
+      const statusNode = document.getElementById('status');
+      const snapshotSelect = document.getElementById('snapshotSelect');
+
+      async function setStatus(message) {
+        statusNode.textContent = message;
+      }
+
+      async function refreshSnapshots() {
+        const backupPath = document.getElementById('backup_path').value;
+        setStatus('Loading snapshots…');
+        const response = await fetch(`/api/snapshots?backup_path=${encodeURIComponent(backupPath)}`);
+        const data = await response.json();
+        snapshotSelect.innerHTML = '';
+        if (data.snapshots.length === 0) {
+          const option = document.createElement('option');
+          option.textContent = 'No snapshots found';
+          snapshotSelect.appendChild(option);
+          setStatus('No snapshots found for the supplied path.');
+          return;
+        }
+        for (const snapshot of data.snapshots) {
+          const option = document.createElement('option');
+          option.value = snapshot;
+          option.textContent = snapshot;
+          snapshotSelect.appendChild(option);
+        }
+        setStatus(`Loaded ${data.snapshots.length} snapshots.`);
+      }
+
+      document.getElementById('refreshButton').onclick = refreshSnapshots;
+
+      document.getElementById('restoreButton').onclick = async () => {
+        const backupPath = document.getElementById('backup_path').value;
+        const restorePath = document.getElementById('restore_path').value;
+        const snapshotName = snapshotSelect.value;
+        setStatus('Starting restore…');
+        const response = await fetch('/api/restore', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ backup_path: backupPath, restore_path: restorePath, snapshot_name: snapshotName })
+        });
+        const data = await response.json();
+        if (!response.ok) {
+          setStatus(JSON.stringify(data, null, 2));
+          return;
+        }
+        setStatus(JSON.stringify(data, null, 2));
+      };
+
+      document.getElementById('cleanupButton').onclick = async () => {
+        const response = await fetch('/api/cleanup', { method: 'POST' });
+        const data = await response.json();
+        setStatus(JSON.stringify(data, null, 2));
+      };
+
+      refreshSnapshots();
+    </script>
+  </body>
+</html>
