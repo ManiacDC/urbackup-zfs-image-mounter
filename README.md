@@ -64,14 +64,13 @@ The compose configuration expects:
 
 - the backup tree mounted at `/mnt/tank/urbackup` (read-only is recommended),
 - the restore location mounted at `/mnt/tank/restore`,
-- a persistent state directory at `/mnt/tank/applicationdata/urbackup-zfs-image-mounter/data`,
+- a persistent state directory at `/mnt/tank/applicationdata/urbackup-zfs-image-mounter/data` so `/data/restore-state.json` inside the container persists across restarts,
 - the ZFS device exposed as `/dev/zfs`, and
 - the container running in privileged mode so the ZFS CLI can manage datasets.
 
 The relevant environment variables are set in [docker-compose.yml](docker-compose.yml):
 
 - `PORT` (default `8000`)
-- `RESTORE_STATE_FILE` (default `/data/restore-state.json`)
 - `BACKUPS_PATH`
 - `RESTORE_PATH`
 - `TRUENAS_API_KEY`

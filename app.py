@@ -1,3 +1,4 @@
+import json
 import os
 import socket
 import subprocess
@@ -11,6 +12,26 @@ from flask import Flask, jsonify, render_template, request
 
 app = Flask(__name__)
 app.config["LAST_RESTORE"] = None
+STATE_FILE = "/data/restore-state.json"
+
+
+def save_restore_state(state: Dict) -> None:
+    state_path = Path(STATE_FILE)
+    state_path.parent.mkdir(parents=True, exist_ok=True)
+    state_path.write_text(json.dumps(state, indent=2), encoding="utf-8")
+
+
+def load_restore_state() -> Optional[Dict]:
+    state_path = Path(STATE_FILE)
+    if not state_path.exists():
+        return None
+    return json.loads(state_path.read_text(encoding="utf-8"))
+
+
+def clear_restore_state() -> None:
+    state_path = Path(STATE_FILE)
+    if state_path.exists():
+        state_path.unlink()
 
 
 def run_command(command: List[str], check: bool = True) -> str:
@@ -259,6 +280,7 @@ def api_restore():
             **truenas_info,
         }
         app.config["LAST_RESTORE"] = state
+        save_restore_state(state)
         return jsonify({"status": "ok", "clone": state})
     except Exception as exc:
         return jsonify({"error": str(exc)}), 500
@@ -266,11 +288,12 @@ def api_restore():
 
 @app.route("/api/cleanup", methods=["POST"])
 def api_cleanup():
-    state = app.config.get("LAST_RESTORE")
+    state = app.config.get("LAST_RESTORE") or load_restore_state()
     if not state:
         return jsonify({"status": "noop", "message": "No restore to clean up"})
     result = cleanup_restore_state(state)
     app.config["LAST_RESTORE"] = None
+    clear_restore_state()
     return jsonify(result)
 
 

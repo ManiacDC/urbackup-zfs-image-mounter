@@ -1,3 +1,4 @@
+import json
 import os
 import tempfile
 import unittest
@@ -28,6 +29,17 @@ class AppTests(unittest.TestCase):
     def test_get_truenas_host_uses_host_docker_internal_when_not_configured(self):
         with patch.dict(os.environ, {}, clear=True), patch.object(app_module.socket, "gethostbyname", return_value="172.17.0.1"):
             self.assertEqual(get_truenas_host(), "http://host.docker.internal")
+
+    def test_restore_state_is_persisted_to_disk(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            state_path = Path(tmp_dir) / "restore-state.json"
+            with patch.object(app_module, "STATE_FILE", str(state_path)):
+                state = {"dataset": "tank/restore"}
+                app_module.save_restore_state(state)
+                self.assertTrue(state_path.exists())
+                self.assertEqual(app_module.load_restore_state(), state)
+                app_module.clear_restore_state()
+                self.assertFalse(state_path.exists())
 
 
 if __name__ == "__main__":

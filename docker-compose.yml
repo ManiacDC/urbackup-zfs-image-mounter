@@ -8,7 +8,6 @@ services:
       - "31842:8000"
     environment:
       PORT: 8000
-      RESTORE_STATE_FILE: /data/restore-state.json
       BACKUPS_PATH: /mnt/tank/urbackup
       RESTORE_PATH: /mnt/tank/restore
       TRUENAS_API_KEY: your-api-key

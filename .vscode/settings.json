@@ -9,6 +9,10 @@
         "/^\\.\\\\\\.venv313\\\\Scripts\\\\python\\.exe -m unittest discover -s tests -v$/": {
             "approve": true,
             "matchCommandLine": true
+        },
+        "/^python -m unittest discover -s tests -p \"test_\\*\\.py\"$/": {
+            "approve": true,
+            "matchCommandLine": true
         }
     }
 }
