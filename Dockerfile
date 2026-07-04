@@ -6,9 +6,11 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 WORKDIR /app
 
-RUN apt-get update \
+RUN . /etc/os-release \
+    && echo "deb http://deb.debian.org/debian ${VERSION_CODENAME} main contrib" > /etc/apt/sources.list.d/contrib.list \
+    && apt-get update \
     && apt-get install -y --no-install-recommends zfsutils-linux \
-    && rm -rf /var/lib/apt/lists/*
+    && rm -rf /var/lib/apt/lists/* /etc/apt/sources.list.d/contrib.list
 
 COPY requirements.txt ./
 RUN pip install --no-cache-dir -r requirements.txt
