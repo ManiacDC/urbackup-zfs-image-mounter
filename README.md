@@ -63,10 +63,11 @@ A compose file is included for running the app in a privileged container with th
 The compose configuration expects:
 
 - the backup tree mounted at `/mnt/tank/urbackup` (read-only is recommended),
-- the restore location mounted at `/mnt/tank/restore`,
+- the restore location mounted at `/mnt/tank/restore` (using `:rshared` propagation),
 - a persistent state directory at `/mnt/tank/applicationdata/urbackup-zfs-image-mounter/data` so `/data/restore-state.json` inside the container persists across restarts,
-- the ZFS device exposed as `/dev/zfs`, and
-- the container running in privileged mode so the ZFS CLI can manage datasets.
+- the ZFS device exposed as `/dev/zfs`,
+- the container running in privileged mode (`privileged: true`), and
+- the container sharing the host's PID namespace (`pid: host` or `--pid=host`). This allows the container to automatically run ZFS/zpool commands via `nsenter` in the host's mount namespace. This ensures ZFS mounts occur on the host, making them visible to both the host OS and TrueNAS middleware.
 
 The relevant environment variables are set in [docker-compose.yml](docker-compose.yml):
 
@@ -76,6 +77,7 @@ The relevant environment variables are set in [docker-compose.yml](docker-compos
 - `TRUENAS_API_KEY`
 - `TRUENAS_VERIFY_SSL`
 - `TRUENAS_TARGET_NAME`
+- `ZFS_PREFIX`: optional command prefix for ZFS/zpool tools (e.g., `nsenter -t 1 -m --`). If omitted, the app will auto-detect if host namespace execution is possible.
 
 ### Manual Docker build/run
 
@@ -90,6 +92,7 @@ Then run:
 ```bash
 docker run --rm -p 8000:8000 \
   --privileged \
+  --pid=host \
   -e BACKUPS_PATH=/mnt/tank/urbackup \
   -e RESTORE_PATH=/mnt/tank/restore \
   -e TRUENAS_HOST=https://truenas.example.com \

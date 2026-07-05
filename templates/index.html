@@ -22,19 +22,29 @@
       <div class="row">
         <div>
           <label for="backup_path">Backups path</label>
-          <input id="backup_path" value="{{ backup_path }}" placeholder="/mnt/tank/urbackup" />
+          <input id="backup_path" value="{{ backup_path }}" placeholder="/mnt/tank/urbackup" readonly />
         </div>
         <div>
           <label for="restore_path">Restore path</label>
-          <input id="restore_path" value="{{ restore_path }}" placeholder="/mnt/tank/restore" />
+          <input id="restore_path" value="{{ restore_path }}" placeholder="/mnt/tank/restore" readonly />
         </div>
       </div>
       <button id="refreshButton" type="button">Refresh snapshots</button>
     </div>
 
     <div class="card">
+      <label for="clientSelect">Client</label>
+      <select id="clientSelect"></select>
+    </div>
+
+    <div class="card">
       <label for="snapshotSelect">Snapshot</label>
       <select id="snapshotSelect"></select>
+      <label for="blocksizeSelect">Block size</label>
+      <select id="blocksizeSelect">
+        <option value="4096">4096</option>
+        <option value="512">512</option>
+      </select>
       <button id="restoreButton" type="button">Restore snapshot</button>
       <button id="cleanupButton" type="button">Clean up last restore</button>
     </div>
@@ -44,22 +54,59 @@
     <script>
       const statusNode = document.getElementById('status');
       const snapshotSelect = document.getElementById('snapshotSelect');
+      const clientSelect = document.getElementById('clientSelect');
+      const backupPathInput = document.getElementById('backup_path');
+      const restorePathInput = document.getElementById('restore_path');
+      const blocksizeSelect = document.getElementById('blocksizeSelect');
 
       async function setStatus(message) {
         statusNode.textContent = message;
       }
 
+      async function refreshClients() {
+        const backupPath = backupPathInput.value;
+        clientSelect.innerHTML = '';
+        clientSelect.disabled = true;
+        const response = await fetch(`/api/clients?backup_path=${encodeURIComponent(backupPath)}`);
+        const data = await response.json();
+        if (data.clients.length === 0) {
+          const option = document.createElement('option');
+          option.textContent = 'No clients found';
+          clientSelect.appendChild(option);
+          return;
+        }
+        for (const client of data.clients) {
+          const option = document.createElement('option');
+          option.value = client;
+          option.textContent = client;
+          clientSelect.appendChild(option);
+        }
+        if (data.clients.length > 0) {
+          clientSelect.value = data.clients[0];
+          await refreshSnapshots();
+        }
+        clientSelect.disabled = false;
+      }
+
       async function refreshSnapshots() {
-        const backupPath = document.getElementById('backup_path').value;
+        const backupPath = backupPathInput.value;
+        const clientSubdir = clientSelect.value || '';
         setStatus('Loading snapshots…');
-        const response = await fetch(`/api/snapshots?backup_path=${encodeURIComponent(backupPath)}`);
+        const response = await fetch(`/api/snapshots?backup_path=${encodeURIComponent(backupPath)}&client_subdir=${encodeURIComponent(clientSubdir)}`);
         const data = await response.json();
         snapshotSelect.innerHTML = '';
+        if (data.error) {
+          const option = document.createElement('option');
+          option.textContent = data.error;
+          snapshotSelect.appendChild(option);
+          setStatus(data.error);
+          return;
+        }
         if (data.snapshots.length === 0) {
           const option = document.createElement('option');
           option.textContent = 'No snapshots found';
           snapshotSelect.appendChild(option);
-          setStatus('No snapshots found for the supplied path.');
+          setStatus('No snapshots found for the supplied path and client.');
           return;
         }
         for (const snapshot of data.snapshots) {
@@ -71,17 +118,24 @@
         setStatus(`Loaded ${data.snapshots.length} snapshots.`);
       }
 
-      document.getElementById('refreshButton').onclick = refreshSnapshots;
+      document.getElementById('refreshButton').onclick = async () => {
+        await refreshClients();
+        await refreshSnapshots();
+      };
+
+      clientSelect.onchange = refreshSnapshots;
 
       document.getElementById('restoreButton').onclick = async () => {
         const backupPath = document.getElementById('backup_path').value;
         const restorePath = document.getElementById('restore_path').value;
         const snapshotName = snapshotSelect.value;
+        const clientSubdir = clientSelect.value || '';
         setStatus('Starting restore…');
+        const blocksize = blocksizeSelect.value;
         const response = await fetch('/api/restore', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ backup_path: backupPath, restore_path: restorePath, snapshot_name: snapshotName })
+          body: JSON.stringify({ backup_path: backupPath, restore_path: restorePath, snapshot_name: snapshotName, client_subdir: clientSubdir, blocksize })
         });
         const data = await response.json();
         if (!response.ok) {
@@ -97,7 +151,7 @@
         setStatus(JSON.stringify(data, null, 2));
       };
 
-      refreshSnapshots();
+      refreshClients().then(refreshSnapshots);
     </script>
   </body>
 </html>

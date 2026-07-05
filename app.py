@@ -1,4 +1,5 @@
 import json
+import logging
 import os
 import socket
 import subprocess
@@ -13,6 +14,7 @@ from flask import Flask, jsonify, render_template, request
 app = Flask(__name__)
 app.config["LAST_RESTORE"] = None
 STATE_FILE = "/data/restore-state.json"
+logging.basicConfig(level=logging.INFO)
 
 
 def save_restore_state(state: Dict) -> None:
@@ -34,19 +36,59 @@ def clear_restore_state() -> None:
         state_path.unlink()
 
 
-def run_command(command: List[str], check: bool = True) -> str:
+_zfs_prefix: Optional[List[str]] = None
+
+
+def get_zfs_prefix() -> List[str]:
+    global _zfs_prefix
+    if _zfs_prefix is not None:
+        return _zfs_prefix
+
+    env_prefix = os.getenv("ZFS_PREFIX", "").strip()
+    if env_prefix:
+        import shlex
+        _zfs_prefix = shlex.split(env_prefix)
+        return _zfs_prefix
+
     try:
-        result = subprocess.run(command, capture_output=True, text=True, check=False)
+        if os.path.exists("/proc/1/cmdline"):
+            cmdline = Path("/proc/1/cmdline").read_text(encoding="utf-8")
+            if any(init_name in cmdline for init_name in ("systemd", "init", "runit", "openrc")):
+                res = subprocess.run(
+                    ["nsenter", "-t", "1", "-m", "true"],
+                    capture_output=True,
+                    text=True,
+                    check=False
+                )
+                if res.returncode == 0:
+                    logging.info("Auto-detected host mount namespace via nsenter. Using nsenter prefix for ZFS commands.")
+                    _zfs_prefix = ["nsenter", "-t", "1", "-m", "--"]
+                    return _zfs_prefix
+    except Exception:
+        pass
+
+    _zfs_prefix = []
+    return _zfs_prefix
+
+
+def run_command(command: List[str], check: bool = True) -> str:
+    cmd = list(command)
+    if cmd and cmd[0] in {"zfs", "zpool"}:
+        prefix = get_zfs_prefix()
+        if prefix:
+            cmd = prefix + cmd
+    try:
+        result = subprocess.run(cmd, capture_output=True, text=True, check=False)
     except FileNotFoundError as exc:
-        raise RuntimeError(f"Required command not found: {command[0]}") from exc
+        raise RuntimeError(f"Required command not found: {cmd[0]}") from exc
 
     if check and result.returncode != 0:
-        raise RuntimeError(f"Command {' '.join(command)} failed: {result.stderr.strip() or result.stdout.strip()}")
+        raise RuntimeError(f"Command {' '.join(cmd)} failed: {result.stderr.strip() or result.stdout.strip()}")
     return result.stdout.strip()
 
 
 def normalize_path(path: str) -> Path:
-    return Path(path).expanduser().resolve()
+    return Path(os.path.normpath(Path(path).expanduser().absolute()))
 
 
 def is_path_within(path: Path, base: Path) -> bool:
@@ -59,6 +101,26 @@ def is_path_within(path: Path, base: Path) -> bool:
 
 def is_absolute_path(path: str) -> bool:
     return Path(path).is_absolute() or path.startswith("/") or path.startswith("\\")
+
+
+def list_client_subdirs(backup_path: str) -> List[str]:
+    backup_path = backup_path.strip()
+    if not backup_path or not is_absolute_path(backup_path):
+        return []
+
+    root = Path(backup_path)
+    if not root.exists():
+        return []
+
+    subdirs = []
+    for entry in root.iterdir():
+        if not entry.is_dir():
+            continue
+        name = entry.name
+        if name.startswith(".") or name == "clients" or name.lower().startswith("urbackup"):
+            continue
+        subdirs.append(name)
+    return sorted(subdirs)
 
 
 def get_zfs_filesystems() -> List[Tuple[str, str]]:
@@ -97,13 +159,23 @@ def discover_datasets_for_path(backup_path: str) -> List[str]:
         return []
 
 
-def list_snapshots_for_path(backup_path: str) -> List[str]:
-    datasets = discover_datasets_for_path(backup_path)
+def list_snapshots_for_path(backup_path: str, client_subdir: str = "") -> List[str]:
+    normalized_backup_path = backup_path.strip()
+    datasets = discover_datasets_for_path(normalized_backup_path)
     snapshots: List[str] = []
     for dataset in datasets:
-        output = run_command(["zfs", "list", "-H", "-t", "snapshot", "-o", "name", dataset], check=False)
+        output = run_command(["zfs", "list", "-H", "-r", "-t", "snapshot", "-o", "name", dataset], check=False)
         if output:
             snapshots.extend(line for line in output.splitlines() if line.strip())
+
+    if client_subdir:
+        client_slug = client_subdir.strip("/")
+        snapshots = [
+            snapshot
+            for snapshot in snapshots
+            if f"/{client_slug}" in snapshot or snapshot.startswith(f"{client_slug}@") or snapshot.startswith(f"{client_slug}/")
+        ]
+
     return sorted(set(snapshots))
 
 
@@ -115,7 +187,17 @@ def find_raw_file(root_path: str) -> Optional[str]:
     return None
 
 
-def derive_target_dataset(restore_path: str) -> str:
+def find_raw_file_with_retry(root_path: str, retries: int = 3, delay: float = 1.0) -> Optional[str]:
+    for attempt in range(retries):
+        raw_path = find_raw_file(root_path)
+        if raw_path:
+            return raw_path
+        if attempt < retries - 1:
+            time.sleep(delay)
+    return None
+
+
+def derive_target_dataset(restore_path: str, snapshot_name: str = "", client_subdir: str = "") -> str:
     restore_path = restore_path.strip()
     if not restore_path:
         raise ValueError("Restore path is required")
@@ -129,24 +211,136 @@ def derive_target_dataset(restore_path: str) -> str:
         if mountpoint and (normalized_path == normalized_mountpoint or is_path_within(normalized_path, normalized_mountpoint)):
             suffix = os.path.relpath(str(normalized_path), str(normalized_mountpoint))
             if suffix == ".":
-                return dataset
-            return f"{dataset}/{suffix}".replace("//", "/")
-    return str(normalized_path).replace("/", "_", 1)
+                base_dataset = dataset
+            else:
+                base_dataset = f"{dataset}/{suffix}".replace("//", "/")
+            break
+    else:
+        base_dataset = str(normalized_path).replace("/", "_", 1)
+
+    parts: List[str] = []
+    if client_subdir:
+        parts.append(client_subdir.strip("/"))
+
+    if snapshot_name:
+        snapshot_path = snapshot_name.strip("/")
+        if "@" in snapshot_path:
+            snapshot_path = snapshot_path.split("@", 1)[0]
+        if snapshot_path:
+            path_parts = [part for part in snapshot_path.split("/") if part]
+            if path_parts:
+                last_part = path_parts[-1]
+                if last_part and last_part != client_subdir.strip("/"):
+                    parts.append(last_part)
+
+    if not parts:
+        return base_dataset
+
+    return "/".join([part for part in [base_dataset, *parts] if part]).replace("//", "/")
 
 
-def ensure_dataset(dataset_name: str) -> str:
+def ensure_dataset(dataset_name: str, recreate: bool = False) -> str:
     try:
         run_command(["zfs", "list", "-H", "-o", "name", dataset_name], check=True)
+        if recreate:
+            return dataset_name
+        return dataset_name
     except RuntimeError:
         run_command(["zfs", "create", "-p", dataset_name], check=True)
     return dataset_name
 
 
-def clone_snapshot(snapshot_name: str, restore_path: str) -> Dict[str, str]:
-    dataset_name = ensure_dataset(derive_target_dataset(restore_path))
-    run_command(["zfs", "clone", snapshot_name, dataset_name], check=True)
-    mountpoint = run_command(["zfs", "get", "-H", "-o", "value", "mountpoint", dataset_name], check=True)
-    return {"dataset": dataset_name, "mountpoint": mountpoint}
+def ensure_parent_dataset(dataset_name: str) -> str:
+    parent_name = dataset_name.rsplit("/", 1)[0]
+    if not parent_name or parent_name == dataset_name:
+        return dataset_name
+    return ensure_dataset(parent_name, recreate=False)
+
+
+def derive_target_mountpoint(restore_path: str, snapshot_name: str = "", client_subdir: str = "") -> str:
+    restore_path = restore_path.strip()
+    if not restore_path:
+        raise ValueError("Restore path is required")
+
+    if not is_absolute_path(restore_path):
+        normalized_path = Path(restore_path)
+    else:
+        normalized_path = normalize_path(restore_path)
+
+    parts: List[str] = []
+    if client_subdir:
+        parts.append(client_subdir.strip("/"))
+
+    if snapshot_name:
+        snapshot_path = snapshot_name.strip("/")
+        if "@" in snapshot_path:
+            snapshot_path = snapshot_path.split("@", 1)[0]
+        if snapshot_path:
+            path_parts = [part for part in snapshot_path.split("/") if part]
+            if path_parts:
+                last_part = path_parts[-1]
+                if last_part and last_part != client_subdir.strip("/"):
+                    parts.append(last_part)
+
+    return os.path.join(str(normalized_path), *parts).replace("\\", "/")
+
+
+def get_pool_altroot(dataset_name: str) -> str:
+    pool_name = dataset_name.split("/")[0]
+    try:
+        altroot = run_command(["zpool", "get", "-H", "-o", "value", "altroot", pool_name], check=True)
+        return altroot.strip()
+    except Exception:
+        return "-"
+
+
+def clone_snapshot(snapshot_name: str, restore_path: str, client_subdir: str = "") -> Dict[str, str]:
+    restore_dataset = derive_target_dataset(restore_path, snapshot_name=snapshot_name, client_subdir=client_subdir)
+    target_mountpoint = derive_target_mountpoint(restore_path, snapshot_name=snapshot_name, client_subdir=client_subdir)
+
+    altroot = get_pool_altroot(restore_dataset)
+    zfs_mountpoint_prop = target_mountpoint
+    if altroot != "-" and altroot != "":
+        altroot_prefix = altroot.rstrip("/") + "/"
+        if target_mountpoint.startswith(altroot_prefix):
+            zfs_mountpoint_prop = "/" + target_mountpoint[len(altroot_prefix):]
+
+    ensure_parent_dataset(restore_dataset)
+    run_command(["zfs", "clone", "-o", f"mountpoint={zfs_mountpoint_prop}", snapshot_name, restore_dataset], check=True)
+    try:
+        run_command(["zfs", "mount", restore_dataset], check=True)
+    except RuntimeError as exc:
+        if "already mounted" not in str(exc).lower():
+            raise
+    mountpoint = run_command(["zfs", "get", "-H", "-o", "value", "mountpoint", restore_dataset], check=True)
+    resolved_mountpoint = mountpoint
+    if altroot != "-" and altroot != "":
+        altroot_prefix = altroot.rstrip("/")
+        if not mountpoint.startswith(altroot_prefix + "/"):
+            resolved_mountpoint = altroot_prefix + mountpoint
+
+    # If running with nsenter in host PID namespace, the host's mount namespace
+    # is accessible via the /proc/1/root symlink inside a privileged container.
+    # This allows us to find the file even if bind mount propagation is not working.
+    search_path = resolved_mountpoint
+    prefix = get_zfs_prefix()
+    if prefix and any("nsenter" in p for p in prefix):
+        host_root_path = os.path.join("/proc/1/root", resolved_mountpoint.lstrip("/"))
+        if os.path.exists(host_root_path):
+            search_path = host_root_path
+
+    raw_path = find_raw_file_with_retry(search_path)
+    resolved_raw_path = ""
+    if raw_path:
+        normalized_raw = raw_path.replace("\\", "/")
+        if normalized_raw.startswith("/proc/1/root/"):
+            resolved_raw_path = "/" + normalized_raw[len("/proc/1/root/"):].lstrip("/")
+        else:
+            resolved_raw_path = raw_path
+
+    return {"dataset": restore_dataset, "mountpoint": resolved_mountpoint, "raw_path": resolved_raw_path}
+
+
 
 
 def get_truenas_host() -> str:
@@ -195,23 +389,59 @@ def truenas_request(method: str, path: str, payload: Optional[Dict] = None) -> D
     return {}
 
 
-def create_truenas_extent(raw_path: str) -> Dict[str, str]:
+def create_truenas_extent(raw_path: str, blocksize: int = 4096) -> Dict[str, str]:
     extent_name = f"urbackup-{uuid.uuid4().hex[:8]}"
+    try:
+        blocksize = int(blocksize)
+    except (ValueError, TypeError):
+        blocksize = 4096
+    if blocksize not in {512, 4096}:
+        blocksize = 4096
     extent_payload = {
         "name": extent_name,
         "type": "FILE",
         "path": raw_path,
-        "filesize": os.path.getsize(raw_path),
-        "blocksize": 512,
-        "pblocksize": 512,
+        "filesize": 0,
+        "blocksize": blocksize,
+        "pblocksize": False,
     }
     extent = truenas_request("post", "/iscsi/extent/", extent_payload)
     target_name = os.getenv("TRUENAS_TARGET_NAME", "urbackup-restore-target")
-    target = truenas_request(
-        "post",
-        "/iscsi/target/",
-        {"name": target_name, "alias": target_name, "mode": "ISCSI", "groups": []},
-    )
+    
+    # Query existing targets to see if the target already exists
+    targets = truenas_request("get", "/iscsi/target/")
+    target = next((t for t in targets if t.get("name") == target_name), None) if isinstance(targets, list) else None
+    
+    if not target:
+        # Resolve portal and initiator group IDs to construct target groups
+        portals = truenas_request("get", "/iscsi/portal/")
+        portal_id = portals[0].get("id") if portals and isinstance(portals, list) else None
+        
+        initiators = truenas_request("get", "/iscsi/initiator/")
+        initiator_id = None
+        if initiators and isinstance(initiators, list):
+            for init in initiators:
+                init_list = init.get("initiators", [])
+                # An initiator group allowing all will have empty initiators list or "*" or "ALL"
+                if not init_list or "ALL" in init_list or "*" in init_list or "" in init_list:
+                    initiator_id = init.get("id")
+                    break
+            if initiator_id is None and initiators:
+                initiator_id = initiators[0].get("id")
+            
+        target_payload = {
+            "name": target_name,
+            "alias": target_name,
+            "mode": "ISCSI",
+            "groups": []
+        }
+        if portal_id is not None and initiator_id is not None:
+            target_payload["groups"].append({
+                "portal": portal_id,
+                "initiator": initiator_id,
+            })
+        target = truenas_request("post", "/iscsi/target/", target_payload)
+        
     truenas_request(
         "post",
         "/iscsi/targetextent/",
@@ -232,11 +462,6 @@ def cleanup_restore_state(state: Dict) -> Dict[str, str]:
             truenas_request("delete", f"/iscsi/extent/id/{state['extent_id']}")
         except RuntimeError as exc:
             result["extent"] = str(exc)
-    if state.get("target_id"):
-        try:
-            truenas_request("delete", f"/iscsi/target/id/{state['target_id']}")
-        except RuntimeError as exc:
-            result["target"] = str(exc)
     if state.get("dataset"):
         try:
             run_command(["zfs", "destroy", "-f", state["dataset"]], check=True)
@@ -252,14 +477,21 @@ def index():
     return render_template("index.html", backup_path=backup_path, restore_path=restore_path)
 
 
+@app.route("/api/clients", methods=["GET"])
+def api_clients():
+    backup_path = request.args.get("backup_path", os.getenv("BACKUPS_PATH", ""))
+    return jsonify({"clients": list_client_subdirs(backup_path), "backup_path": backup_path})
+
+
 @app.route("/api/snapshots", methods=["GET"])
 def api_snapshots():
     backup_path = request.args.get("backup_path", os.getenv("BACKUPS_PATH", ""))
+    client_subdir = request.args.get("client_subdir", "")
     try:
-        snapshots = list_snapshots_for_path(backup_path)
+        snapshots = list_snapshots_for_path(backup_path, client_subdir)
     except RuntimeError as exc:
         return jsonify({"error": str(exc)}), 500
-    return jsonify({"snapshots": snapshots, "backup_path": backup_path})
+    return jsonify({"snapshots": snapshots, "backup_path": backup_path, "client_subdir": client_subdir})
 
 
 @app.route("/api/restore", methods=["POST"])
@@ -268,29 +500,51 @@ def api_restore():
     backup_path = payload.get("backup_path") or os.getenv("BACKUPS_PATH", "")
     restore_path = payload.get("restore_path") or os.getenv("RESTORE_PATH", "")
     snapshot_name = payload.get("snapshot_name", "")
+    client_subdir = payload.get("client_subdir", "")
+    blocksize = payload.get("blocksize", 4096)
 
     if not backup_path or not restore_path or not snapshot_name:
         return jsonify({"error": "backup_path, restore_path and snapshot_name are required"}), 400
 
     try:
-        clone_info = clone_snapshot(snapshot_name, restore_path)
-        raw_path = find_raw_file(clone_info["mountpoint"])
+        clone_info = clone_snapshot(snapshot_name, restore_path, client_subdir=client_subdir)
+        raw_path = clone_info.get("raw_path") or find_raw_file_with_retry(clone_info["mountpoint"])
         if not raw_path:
             raise RuntimeError(f"No .raw image found under {clone_info['mountpoint']}")
-        truenas_info = create_truenas_extent(raw_path)
         state = {
             "snapshot": snapshot_name,
             "dataset": clone_info["dataset"],
             "mountpoint": clone_info["mountpoint"],
             "raw_path": raw_path,
             "created_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
-            **truenas_info,
         }
+        app.config["LAST_RESTORE"] = state
+        save_restore_state(state)
+        truenas_info = create_truenas_extent(raw_path, blocksize=blocksize)
+        state.update(truenas_info)
         app.config["LAST_RESTORE"] = state
         save_restore_state(state)
         return jsonify({"status": "ok", "clone": state})
     except Exception as exc:
-        return jsonify({"error": str(exc)}), 500
+        app.logger.exception("Restore request failed")
+        diagnostics = {
+            "error": str(exc),
+            "backup_path": backup_path,
+            "restore_path": restore_path,
+            "snapshot_name": snapshot_name,
+            "client_subdir": client_subdir,
+            "blocksize": blocksize,
+        }
+        if "clone_info" in locals():
+            diagnostics["mountpoint"] = clone_info.get("mountpoint", "")
+            diagnostics["dataset"] = clone_info.get("dataset", "")
+            diagnostics["raw_path"] = clone_info.get("raw_path", "")
+        if "raw_path" in locals():
+            diagnostics["resolved_raw_path"] = raw_path
+        if "state" in locals() and state:
+            app.config["LAST_RESTORE"] = state
+            save_restore_state(state)
+        return jsonify({"error": str(exc), "diagnostics": diagnostics}), 500
 
 
 @app.route("/api/cleanup", methods=["POST"])

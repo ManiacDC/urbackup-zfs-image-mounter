@@ -3,6 +3,7 @@ services:
     image: maniacdc/urbackup-zfs-image-mounter:latest
     container_name: urbackup-zfs-image-mounter
     privileged: true
+    pid: host
     restart: unless-stopped
     ports:
       - "31842:8000"
