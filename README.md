@@ -101,3 +101,12 @@ docker run --rm -p 8000:8000 \
 ```
 
 On TrueNAS, mount the backup path and the ZFS device as needed. The container should be started in privileged mode so the ZFS CLI can manage datasets.
+
+## Quick Usage Instructions (Windows client)
+
+Launch the UI, Select a client, then a snapshot, then hit "Restore snapshot". This will create an iscsi target/extent for the snapshot. You will need to manually enable the service.
+
+Then go to your start menu, type "iscsi" and hit enter on "iSCSI Initiator". In the "Target" field, enter the server hostname and hit Quick Connect. Uncheck the box about favorite targets as you don't want to auto reconnect. (Second time around, just click "Connect" on the selected urbackup-restore-target)
+This should then open up the drive as a new drive attached to your PC. You can copy whatever files off of it you need. Not sure if you can edit it - you shouldn't even if you can, but it shouldn't matter if you do.
+
+When done, Hit "Disconnect" in the iSCSI Initiator, then back in the web UI, click "Clean up last restore". This will delete the iscsi extent and clean up the temporary snapshot clone.
