@@ -389,14 +389,14 @@ def truenas_request(method: str, path: str, payload: Optional[Dict] = None) -> D
     return {}
 
 
-def create_truenas_extent(raw_path: str, blocksize: int = 4096) -> Dict[str, str]:
+def create_truenas_extent(raw_path: str, blocksize: int = 512) -> Dict[str, str]:
     extent_name = f"urbackup-{uuid.uuid4().hex[:8]}"
     try:
         blocksize = int(blocksize)
     except (ValueError, TypeError):
-        blocksize = 4096
+        blocksize = 512
     if blocksize not in {512, 4096}:
-        blocksize = 4096
+        blocksize = 512
     extent_payload = {
         "name": extent_name,
         "type": "FILE",
@@ -501,7 +501,7 @@ def api_restore():
     restore_path = payload.get("restore_path") or os.getenv("RESTORE_PATH", "")
     snapshot_name = payload.get("snapshot_name", "")
     client_subdir = payload.get("client_subdir", "")
-    blocksize = payload.get("blocksize", 4096)
+    blocksize = payload.get("blocksize", 512)
 
     if not backup_path or not restore_path or not snapshot_name:
         return jsonify({"error": "backup_path, restore_path and snapshot_name are required"}), 400
