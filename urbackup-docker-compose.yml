@@ -1,0 +1,31 @@
+services:
+  urbackup-server:
+    image: uroni/urbackup-server:latest-zfs
+    container_name: urbackup
+    restart: unless-stopped
+    network_mode: host
+    privileged: true
+    init: true
+    devices:
+      - /dev/zfs:/dev/zfs
+    environment:
+      - TZ=America/New_York
+      - PUID=0
+      - PGID=0
+      - ZFS_IMAGE=tank/urbackup
+      - ZFS_FILES=tank/urbackup
+      - ZFS_MOUNTPOINT=/mnt/tank/urbackup
+      - BACKUPFOLDER=/backups
+    volumes:
+      - /mnt/tank/ApplicationData/UrBackup/Database:/var/urbackup
+      - /mnt/tank/ApplicationData/UrBackup/Config:/etc/urbackup
+      - /mnt/tank/urbackup:/backups:shared
+      - /mnt/tank/ApplicationData/UrBackup/Logs:/var/log
+    entrypoint: >
+      sh -c "
+      # this is necessary so previous backups are available to the server on container restart,
+      # otherwise incremental image backups, cleanup tasks, etc will fail
+      echo 'Forcing boot-time ZFS mount sweep...';
+      zfs mount -a;
+      exec /usr/bin/entrypoint.sh run
+      "

@@ -7,6 +7,10 @@ This project provides a small Flask app that can:
 - find the resulting .raw disk image,
 - create a TrueNAS iSCSI file extent for it.
 
+### Side Note
+
+I had a heck of a time getting urbackup to actually properly do zfs raw copy-on-write image backups when run via docker on TrueNAS. I've included an example, `urbackup-docker-compose.yml`, to help others out with this task.
+
 ## Requirements
 
 - Python 3.13
