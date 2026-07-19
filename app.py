@@ -352,11 +352,11 @@ def get_truenas_host() -> str:
     for hostname in ("host.docker.internal", "host-gateway", "gateway.docker.internal"):
         try:
             socket.gethostbyname(hostname)
-            return f"http://{hostname}"
+            return f"https://{hostname}"
         except OSError:
             continue
 
-    return "http://host.docker.internal"
+    return "https://host.docker.internal"
 
 
 

@@ -28,7 +28,7 @@ class AppTests(unittest.TestCase):
 
     def test_get_truenas_host_uses_host_docker_internal_when_not_configured(self):
         with patch.dict(os.environ, {}, clear=True), patch.object(app_module.socket, "gethostbyname", return_value="172.17.0.1"):
-            self.assertEqual(get_truenas_host(), "http://host.docker.internal")
+            self.assertEqual(get_truenas_host(), "https://host.docker.internal")
 
     def test_restore_state_is_persisted_to_disk(self):
         with tempfile.TemporaryDirectory() as tmp_dir:
