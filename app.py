@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 from contextlib import contextmanager
 
-from truenas_api_client import Client
+from truenas_api_client import APIKeyAuthMech, Client
 from flask import Flask, jsonify, render_template, request
 
 app = Flask(__name__)
@@ -359,6 +359,7 @@ def get_truenas_host() -> str:
     return "http://host.docker.internal"
 
 
+
 @contextmanager
 def truenas_client():
     verify_ssl = os.getenv("TRUENAS_VERIFY_SSL", "false").lower() in {"1", "true", "yes", "on"}
@@ -367,20 +368,26 @@ def truenas_client():
         raise RuntimeError("TRUENAS_API_KEY is not configured")
 
     host = get_truenas_host().rstrip("/")
-    if host.startswith("https://"):
-        uri = "wss://" + host[8:] + "/api/current"
-    elif host.startswith("http://"):
-        uri = "ws://" + host[7:] + "/api/current"
-    elif host.startswith("wss://") or host.startswith("ws://"):
-        uri = host + "/api/current" if not host.endswith("/api/current") else host
+    if host.startswith("ws://") or host.startswith("wss://"):
+        uri = host
     else:
-        scheme = "wss" if verify_ssl else "ws"
-        uri = f"{scheme}://{host}/api/current"
+        if host.startswith("https://"):
+            uri = "wss://" + host[8:]
+        elif host.startswith("http://"):
+            uri = "ws://" + host[7:]
+        else:
+            scheme = "wss" if verify_ssl else "ws"
+            uri = f"{scheme}://{host}"
+
+        if "/api/current" not in uri and "/websocket" not in uri:
+            uri = uri + "/api/current"
 
     username = os.getenv("TRUENAS_USERNAME", "truenas_admin")
+    auth_mechanism_env = os.getenv("TRUENAS_AUTH_MECHANISM", "SCRAM").upper()
+    auth_mechanism = APIKeyAuthMech.PLAIN if auth_mechanism_env == "PLAIN" else APIKeyAuthMech.SCRAM
 
     with Client(uri=uri, verify_ssl=verify_ssl) as c:
-        c.login_with_api_key(username, api_key)
+        c.login_with_api_key(username, api_key, auth_mechanism=auth_mechanism)
         yield c
 
 
