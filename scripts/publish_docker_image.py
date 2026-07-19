@@ -4,7 +4,27 @@ import subprocess
 import sys
 
 REPO = "maniacdc/urbackup-zfs-image-mounter"
-TAG = "latest"
+
+
+def get_tag_from_requirements() -> str:
+    req_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "requirements.txt")
+    if not os.path.exists(req_path):
+        return "latest"
+    try:
+        with open(req_path, "r", encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if "truenas/api_client" in line and "@" in line:
+                    tag = line.split("@")[-1].strip()
+                    if tag.startswith("TS-"):
+                        tag = tag[3:]
+                    return tag
+    except Exception:
+        pass
+    return "latest"
+
+
+TAG = get_tag_from_requirements()
 IMAGE = f"{REPO}:{TAG}"
 
 
