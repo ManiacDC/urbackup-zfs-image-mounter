@@ -9,7 +9,7 @@ WORKDIR /app
 RUN . /etc/os-release \
     && echo "deb http://deb.debian.org/debian ${VERSION_CODENAME} main contrib" > /etc/apt/sources.list.d/contrib.list \
     && apt-get update \
-    && apt-get install -y --no-install-recommends zfsutils-linux \
+    && apt-get install -y --no-install-recommends zfsutils-linux git \
     && rm -rf /var/lib/apt/lists/* /etc/apt/sources.list.d/contrib.list
 
 COPY requirements.txt ./
