@@ -7,8 +7,9 @@ import time
 import uuid
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
+from contextlib import contextmanager
 
-import requests
+from truenas_api_client import Client
 from flask import Flask, jsonify, render_template, request
 
 app = Flask(__name__)
@@ -358,35 +359,29 @@ def get_truenas_host() -> str:
     return "http://host.docker.internal"
 
 
-def truenas_request(method: str, path: str, payload: Optional[Dict] = None) -> Dict:
-    base_url = get_truenas_host().rstrip("/")
+@contextmanager
+def truenas_client():
+    verify_ssl = os.getenv("TRUENAS_VERIFY_SSL", "false").lower() in {"1", "true", "yes", "on"}
     api_key = os.getenv("TRUENAS_API_KEY", "")
     if not api_key:
         raise RuntimeError("TRUENAS_API_KEY is not configured")
-    if not api_key:
-        raise RuntimeError("TRUENAS_API_KEY is not configured")
 
-    verify_ssl = os.getenv("TRUENAS_VERIFY_SSL", "false").lower() in {"1", "true", "yes", "on"}
-    headers = {
-        "Authorization": f"Bearer {api_key}",
-        "Content-Type": "application/json",
-    }
-    response = requests.request(
-        method,
-        f"{base_url}/api/v2.0{path}",
-        headers=headers,
-        json=payload,
-        verify=verify_ssl,
-        timeout=30,
-    )
-    if response.status_code >= 400:
-        raise RuntimeError(f"TrueNAS API error {response.status_code}: {response.text}")
-    if response.text:
-        try:
-            return response.json()
-        except ValueError:
-            return {"message": response.text}
-    return {}
+    host = get_truenas_host().rstrip("/")
+    if host.startswith("https://"):
+        uri = "wss://" + host[8:] + "/api/current"
+    elif host.startswith("http://"):
+        uri = "ws://" + host[7:] + "/api/current"
+    elif host.startswith("wss://") or host.startswith("ws://"):
+        uri = host + "/api/current" if not host.endswith("/api/current") else host
+    else:
+        scheme = "wss" if verify_ssl else "ws"
+        uri = f"{scheme}://{host}/api/current"
+
+    username = os.getenv("TRUENAS_USERNAME", "truenas_admin")
+
+    with Client(uri=uri, verify_ssl=verify_ssl) as c:
+        c.login_with_api_key(username, api_key)
+        yield c
 
 
 def create_truenas_extent(raw_path: str, blocksize: int = 512) -> Dict[str, str]:
@@ -405,48 +400,50 @@ def create_truenas_extent(raw_path: str, blocksize: int = 512) -> Dict[str, str]
         "blocksize": blocksize,
         "pblocksize": False,
     }
-    extent = truenas_request("post", "/iscsi/extent/", extent_payload)
     target_name = os.getenv("TRUENAS_TARGET_NAME", "urbackup-restore-target")
-    
-    # Query existing targets to see if the target already exists
-    targets = truenas_request("get", "/iscsi/target/")
-    target = next((t for t in targets if t.get("name") == target_name), None) if isinstance(targets, list) else None
-    
-    if not target:
-        # Resolve portal and initiator group IDs to construct target groups
-        portals = truenas_request("get", "/iscsi/portal/")
-        portal_id = portals[0].get("id") if portals and isinstance(portals, list) else None
-        
-        initiators = truenas_request("get", "/iscsi/initiator/")
-        initiator_id = None
-        if initiators and isinstance(initiators, list):
-            for init in initiators:
-                init_list = init.get("initiators", [])
-                # An initiator group allowing all will have empty initiators list or "*" or "ALL"
-                if not init_list or "ALL" in init_list or "*" in init_list or "" in init_list:
-                    initiator_id = init.get("id")
-                    break
-            if initiator_id is None and initiators:
-                initiator_id = initiators[0].get("id")
-            
-        target_payload = {
-            "name": target_name,
-            "alias": target_name,
-            "mode": "ISCSI",
-            "groups": []
-        }
-        if portal_id is not None and initiator_id is not None:
-            target_payload["groups"].append({
-                "portal": portal_id,
-                "initiator": initiator_id,
-            })
-        target = truenas_request("post", "/iscsi/target/", target_payload)
-        
-    truenas_request(
-        "post",
-        "/iscsi/targetextent/",
-        {"target": target.get("id"), "extent": extent.get("id")},
-    )
+
+    with truenas_client() as c:
+        extent = c.call("iscsi.extent.create", extent_payload)
+
+        # Query existing targets to see if the target already exists
+        targets = c.call("iscsi.target.query")
+        target = next((t for t in targets if t.get("name") == target_name), None) if isinstance(targets, list) else None
+
+        if not target:
+            # Resolve portal and initiator group IDs to construct target groups
+            portals = c.call("iscsi.portal.query")
+            portal_id = portals[0].get("id") if portals and isinstance(portals, list) else None
+
+            initiators = c.call("iscsi.initiator.query")
+            initiator_id = None
+            if initiators and isinstance(initiators, list):
+                for init in initiators:
+                    init_list = init.get("initiators", [])
+                    # An initiator group allowing all will have empty initiators list or "*" or "ALL"
+                    if not init_list or "ALL" in init_list or "*" in init_list or "" in init_list:
+                        initiator_id = init.get("id")
+                        break
+                if initiator_id is None and initiators:
+                    initiator_id = initiators[0].get("id")
+
+            target_payload = {
+                "name": target_name,
+                "alias": target_name,
+                "mode": "ISCSI",
+                "groups": []
+            }
+            if portal_id is not None and initiator_id is not None:
+                target_payload["groups"].append({
+                    "portal": portal_id,
+                    "initiator": initiator_id,
+                })
+            target = c.call("iscsi.target.create", target_payload)
+
+        c.call(
+            "iscsi.targetextent.create",
+            {"target": target.get("id"), "extent": extent.get("id")},
+        )
+
     return {
         "extent_id": str(extent.get("id", "")),
         "target_id": str(target.get("id", "")),
@@ -459,8 +456,9 @@ def cleanup_restore_state(state: Dict) -> Dict[str, str]:
     result: Dict[str, str] = {"status": "ok"}
     if state.get("extent_id"):
         try:
-            truenas_request("delete", f"/iscsi/extent/id/{state['extent_id']}")
-        except RuntimeError as exc:
+            with truenas_client() as c:
+                c.call("iscsi.extent.delete", int(state["extent_id"]))
+        except Exception as exc:
             result["extent"] = str(exc)
     if state.get("dataset"):
         try:

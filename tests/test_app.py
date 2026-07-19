@@ -3,7 +3,7 @@ import os
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import app as app_module
 from app import cleanup_restore_state, clone_snapshot, create_truenas_extent, derive_target_dataset, discover_datasets_for_path, ensure_dataset, find_raw_file, get_truenas_host, list_client_subdirs, list_snapshots_for_path
@@ -120,25 +120,55 @@ class AppTests(unittest.TestCase):
     def test_create_truenas_extent_uses_configured_blocksize(self):
         captured = []
 
-        def fake_truenas_request(method, path, payload=None):
-            captured.append((method, path, payload))
-            if method.lower() == "get":
-                if "target" in path:
+        def fake_call(method, *args):
+            captured.append((method, args))
+            if "query" in method:
+                if "target" in method:
                     return []
-                if "portal" in path:
+                if "portal" in method:
                     return [{"id": 1}]
-                if "initiator" in path:
+                if "initiator" in method:
                     return [{"id": 1, "initiators": []}]
             return {"id": 1}
+
+        class MockClientContext:
+            def __enter__(self):
+                mock_client = MagicMock()
+                mock_client.call.side_effect = fake_call
+                return mock_client
+            def __exit__(self, exc_type, exc_val, exc_tb):
+                pass
 
         with tempfile.TemporaryDirectory() as tmp_dir:
             raw_path = Path(tmp_dir) / "image.raw"
             raw_path.write_bytes(b"abc")
-            with patch.object(app_module, "truenas_request", side_effect=fake_truenas_request):
+            with patch.object(app_module, "truenas_client", return_value=MockClientContext()):
                 create_truenas_extent(str(raw_path), blocksize="512")
 
-        self.assertEqual(captured[0][2]["blocksize"], 512)
-        self.assertFalse(captured[0][2]["pblocksize"])
+        self.assertEqual(captured[0][1][0]["blocksize"], 512)
+        self.assertFalse(captured[0][1][0]["pblocksize"])
+
+    def test_cleanup_restore_state_deletes_truenas_extent(self):
+        captured_calls = []
+
+        class MockClientContext:
+            def __enter__(self):
+                mock_client = MagicMock()
+                mock_client.call.side_effect = lambda method, *args: captured_calls.append((method, args))
+                return mock_client
+            def __exit__(self, exc_type, exc_val, exc_tb):
+                pass
+
+        with patch.object(app_module, "truenas_client", return_value=MockClientContext()):
+            with patch.object(app_module, "run_command", return_value="") as mock_run:
+                state = {
+                    "dataset": "tank/restore/MONSTERSERVER/260703-1705_Image_C",
+                    "extent_id": "123"
+                }
+                result = cleanup_restore_state(state)
+
+        self.assertEqual(result["status"], "ok")
+        self.assertEqual(captured_calls, [("iscsi.extent.delete", (123,))])
 
     def test_api_restore_persists_state_when_extent_creation_fails(self):
         with tempfile.TemporaryDirectory() as tmp_dir:
