@@ -1,2 +1,2 @@
 Flask>=3.0,<4.0
-git+https://github.com/truenas/api_client.git@TS-25.10.4
+git+https://github.com/truenas/api_client.git@master

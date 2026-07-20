@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 from contextlib import contextmanager
 
-from truenas_api_client import Client
+from truenas_api_client import APIKeyAuthMech, Client
 from flask import Flask, jsonify, render_template, request
 
 app = Flask(__name__)
@@ -382,9 +382,12 @@ def truenas_client():
         if "/api/current" not in uri and "/websocket" not in uri:
             uri = uri + "/api/current"
 
+    username = os.getenv("TRUENAS_USERNAME", "truenas_admin")
+    auth_mechanism_env = os.getenv("TRUENAS_AUTH_MECHANISM", "SCRAM").upper()
+    auth_mechanism = APIKeyAuthMech.PLAIN if auth_mechanism_env == "PLAIN" else APIKeyAuthMech.SCRAM
+
     with Client(uri=uri, verify_ssl=verify_ssl) as c:
-        if not c.call("auth.login_with_api_key", api_key):
-            raise RuntimeError("Authentication failed: Invalid API key")
+        c.login_with_api_key(username, api_key, auth_mechanism=auth_mechanism)
         yield c
 
 
