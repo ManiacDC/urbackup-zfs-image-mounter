@@ -12,8 +12,8 @@ services:
       - TZ=America/New_York
       - PUID=0
       - PGID=0
-      - ZFS_IMAGE=tank/urbackup
-      - ZFS_FILES=tank/urbackup
+      - ZFS_IMAGE=tank/urbackup/images
+      - ZFS_FILES=tank/urbackup/files
     volumes:
       - /mnt/tank/ApplicationData/UrBackup/Database:/var/urbackup
       - /mnt/tank/ApplicationData/UrBackup/Config:/etc/urbackup
