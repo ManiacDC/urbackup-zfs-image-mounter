@@ -14,8 +14,6 @@ services:
       - PGID=0
       - ZFS_IMAGE=tank/urbackup
       - ZFS_FILES=tank/urbackup
-      - ZFS_MOUNTPOINT=/mnt/tank/urbackup
-      - BACKUPFOLDER=/backups
     volumes:
       - /mnt/tank/ApplicationData/UrBackup/Database:/var/urbackup
       - /mnt/tank/ApplicationData/UrBackup/Config:/etc/urbackup
